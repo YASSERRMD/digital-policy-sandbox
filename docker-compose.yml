@@ -1,0 +1,100 @@
+# Digital Policy Sandbox - Docker Compose
+# Production-ready deployment configuration
+
+version: '3.8'
+
+services:
+  # Main Next.js Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: policy-sandbox-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/app/data/policy-sandbox.db
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-your-secret-key-change-in-production}
+    volumes:
+      - policy-data:/app/data
+      - policy-logs:/app/logs
+    networks:
+      - policy-network
+    depends_on:
+      - simulation-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/policies"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Simulation Service (Socket.io)
+  simulation-service:
+    build:
+      context: ./mini-services/simulation-service
+      dockerfile: Dockerfile.simulation
+    container_name: policy-sandbox-simulation
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/app/data/policy-sandbox.db
+    volumes:
+      - policy-data:/app/data:ro
+    networks:
+      - policy-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx Reverse Proxy (Optional - for production)
+  nginx:
+    image: nginx:alpine
+    container_name: policy-sandbox-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - policy-network
+    depends_on:
+      - app
+      - simulation-service
+    profiles:
+      - production
+
+  # Redis Cache (Optional - for distributed caching)
+  redis:
+    image: redis:7-alpine
+    container_name: policy-sandbox-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - policy-network
+    profiles:
+      - production
+
+networks:
+  policy-network:
+    driver: bridge
+
+volumes:
+  policy-data:
+    driver: local
+  policy-logs:
+    driver: local
+  redis-data:
+    driver: local
