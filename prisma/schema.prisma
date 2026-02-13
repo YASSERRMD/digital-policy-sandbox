@@ -1,0 +1,387 @@
+// Digital Policy Sandbox - Prisma Schema
+// Multi-tenant RBAC system with policy simulation capabilities
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// MULTI-TENANT & RBAC
+// ============================================
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  domain      String?
+  isActive    Boolean  @default(true)
+  settings    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  policies    Policy[]
+  scenarios   Scenario[]
+  roles       Role[]
+  citizenGroups      CitizenGroup[]
+  businessCategories BusinessCategory[]
+  simulations        Simulation[]
+  comparisons        ScenarioComparison[]
+
+  @@map("tenants")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatar    String?
+  isActive  Boolean  @default(true)
+  tenantId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles     UserRole[]
+  policies  Policy[]
+  scenarios Scenario[]
+  simulations Simulation[]
+  comparisons  ScenarioComparison[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String
+  description String?
+  isSystem    Boolean  @default(false)
+  tenantId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users       UserRole[]
+  permissions Permission[]
+
+  @@unique([tenantId, slug])
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  resource    String   // e.g., "policy", "scenario", "simulation"
+  action      String   // e.g., "create", "read", "update", "delete", "simulate"
+  roleId      String
+  createdAt   DateTime @default(now())
+
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, resource, action])
+  @@map("permissions")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+// ============================================
+// POLICY DEFINITION
+// ============================================
+
+model Policy {
+  id          String   @id @default(cuid())
+  name        String
+  code        String
+  description String?
+  category    String   // e.g., "fines", "permits", "inspections", "taxation"
+  status      String   @default("draft") // draft, active, archived
+  tenantId    String
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   User        @relation(fields: [createdById], references: [id])
+  versions    PolicyVersion[]
+  scenarios   ScenarioPolicy[]
+
+  @@unique([tenantId, code])
+  @@map("policies")
+}
+
+model PolicyVersion {
+  id          String   @id @default(cuid())
+  policyId    String
+  version     Int
+  parameters  Json     // Store all parameters as JSON
+  changeLog   String?
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  policy      Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  scenarios   ScenarioPolicy[]
+
+  @@unique([policyId, version])
+  @@map("policy_versions")
+}
+
+// ============================================
+// SCENARIO BRANCHING
+// ============================================
+
+model Scenario {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  status       String   @default("draft") // draft, simulating, completed, archived
+  isBaseline   Boolean  @default(false)
+  parentScenarioId String?
+  tenantId     String
+  createdById  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy    User            @relation(fields: [createdById], references: [id])
+  parentScenario Scenario?      @relation("ScenarioBranches", fields: [parentScenarioId], references: [id], onDelete: SetNull)
+  childScenarios Scenario[]     @relation("ScenarioBranches")
+  policies     ScenarioPolicy[]
+  simulations  Simulation[]
+  results      SimulationResult[]
+  comparisonBaselines ScenarioComparison[]  @relation("ComparisonBaseline")
+  comparisonScenarios ComparisonScenario[]
+
+  @@map("scenarios")
+}
+
+model ScenarioPolicy {
+  id              String   @id @default(cuid())
+  scenarioId      String
+  policyId        String
+  policyVersionId String
+  parameterOverrides Json?  // Override specific parameters
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  scenario        Scenario      @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  policy          Policy        @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([scenarioId, policyId])
+  @@map("scenario_policies")
+}
+
+// ============================================
+// POPULATION MODELING
+// ============================================
+
+model CitizenGroup {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  population      Int      @default(1000)
+  demographics    Json     // age distribution, income levels, etc.
+  behaviorRules   Json?    // Rule-based behavior modifiers
+  complianceRate  Float    @default(0.8)
+  tenantId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  simulationResults SimulationResultGroup[]
+
+  @@map("citizen_groups")
+}
+
+model BusinessCategory {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  count           Int      @default(100)
+  industry        String?
+  sizeCategory    String?  // small, medium, large
+  behaviorRules   Json?    // Rule-based behavior modifiers
+  complianceRate  Float    @default(0.85)
+  tenantId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  simulationResults SimulationResultBusiness[]
+
+  @@map("business_categories")
+}
+
+// ============================================
+// SIMULATION ENGINE
+// ============================================
+
+model Simulation {
+  id              String   @id @default(cuid())
+  scenarioId      String
+  status          String   @default("pending") // pending, running, completed, failed
+  progress        Float    @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  duration        Int?     // in milliseconds
+  error           String?
+  config          Json?    // Simulation configuration
+  tenantId        String
+  createdById     String
+  createdAt       DateTime @default(now())
+
+  scenario        Scenario          @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User              @relation(fields: [createdById], references: [id])
+  results         SimulationResult[]
+  metrics         SimulationMetric[]
+
+  @@map("simulations")
+}
+
+model SimulationResult {
+  id                String   @id @default(cuid())
+  simulationId      String
+  scenarioId        String
+  metricName        String   // revenue, compliance_rate, workload, satisfaction_index
+  metricValue       Float
+  metricUnit        String?  // currency, percentage, hours, index
+  period            String?  // monthly, quarterly, yearly
+  timestamp         DateTime @default(now())
+  metadata          Json?
+
+  simulation        Simulation   @relation(fields: [simulationId], references: [id], onDelete: Cascade)
+  scenario          Scenario     @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  groupResults      SimulationResultGroup[]
+  businessResults   SimulationResultBusiness[]
+
+  @@map("simulation_results")
+}
+
+model SimulationResultGroup {
+  id            String   @id @default(cuid())
+  resultId      String
+  citizenGroupId String
+  metricName    String
+  metricValue   Float
+  metadata      Json?
+
+  result        SimulationResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  citizenGroup  CitizenGroup     @relation(fields: [citizenGroupId], references: [id], onDelete: Cascade)
+
+  @@map("simulation_result_groups")
+}
+
+model SimulationResultBusiness {
+  id                String   @id @default(cuid())
+  resultId          String
+  businessCategoryId String
+  metricName        String
+  metricValue       Float
+  metadata          Json?
+
+  result            SimulationResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  businessCategory  BusinessCategory @relation(fields: [businessCategoryId], references: [id], onDelete: Cascade)
+
+  @@map("simulation_result_businesses")
+}
+
+model SimulationMetric {
+  id            String   @id @default(cuid())
+  simulationId  String
+  name          String
+  displayName   String
+  value         Float
+  unit          String?
+  category      String?  // financial, operational, social
+  changeFromBaseline Float?
+  changePercent Float?
+  isPositive    Boolean  @default(true) // whether higher is better
+
+  simulation    Simulation @relation(fields: [simulationId], references: [id], onDelete: Cascade)
+
+  @@unique([simulationId, name])
+  @@map("simulation_metrics")
+}
+
+// ============================================
+// CACHE MANAGEMENT
+// ============================================
+
+model CacheEntry {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  tags        String?  // Comma-separated cache tags
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("cache_entries")
+}
+
+// ============================================
+// COMPARISON & EXPORT
+// ============================================
+
+model ScenarioComparison {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  baselineScenarioId String
+  tenantId        String
+  createdById     String
+  createdAt       DateTime @default(now())
+
+  baselineScenario Scenario       @relation("ComparisonBaseline", fields: [baselineScenarioId], references: [id], onDelete: Cascade)
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy       User           @relation(fields: [createdById], references: [id])
+  comparedScenarios ComparisonScenario[]
+
+  @@map("scenario_comparisons")
+}
+
+model ComparisonScenario {
+  id            String   @id @default(cuid())
+  comparisonId  String
+  scenarioId    String
+  order         Int      @default(0)
+
+  comparison    ScenarioComparison @relation(fields: [comparisonId], references: [id], onDelete: Cascade)
+  scenario      Scenario           @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@unique([comparisonId, scenarioId])
+  @@map("comparison_scenarios")
+}
+
+model ExportJob {
+  id          String   @id @default(cuid())
+  type        String   // pdf, csv, json
+  status      String   @default("pending") // pending, processing, completed, failed
+  config      Json?
+  resultUrl   String?
+  error       String?
+  tenantId    String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@map("export_jobs")
+}
